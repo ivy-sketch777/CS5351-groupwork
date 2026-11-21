@@ -24,6 +24,7 @@ class CaseDB(Base):
     reason_text = Column(Text, nullable=False)
     attachment_url = Column(String, nullable=True)
     status = Column(String, nullable=False, default="draft")
+    decision_reason = Column(Text, nullable=True)
 
 
 def get_db():
