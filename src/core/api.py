@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from src.core.database import CaseDB, get_db, init_db
 from src.core.mock_policy import evaluate_policy
+from src.core.models import ReviewDecisionRequest, SupplementRequest
 from src.schemas import (
     ApplicationPayload,
     AuditInfo,
@@ -111,3 +112,68 @@ def list_pending_reviews(
         )
         for record in records
     ]
+
+
+@app.post("/api/review/{case_id}/decision", response_model=SystemResponse)
+def submit_review_decision(
+    case_id: str,
+    request: ReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    counselor_token: str = Depends(require_counselor),
+) -> SystemResponse:
+    record = db.get(CaseDB, case_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="案件不存在")
+
+    if record.status != CaseStatus.IN_REVIEW.value:
+        raise HTTPException(
+            status_code=400, detail="当前状态不允许审批，仅 in_review 可审批"
+        )
+
+    new_status = (
+        CaseStatus.APPROVED
+        if request.decision == "approve"
+        else CaseStatus.REJECTED
+    )
+    record.status = new_status.value
+    record.decision_reason = request.reason
+    db.commit()
+    db.refresh(record)
+
+    verb = "已批准" if request.decision == "approve" else "已驳回"
+    return SystemResponse(
+        case_id=record.case_id,
+        status=CaseStatus(record.status),
+        message=f"复核{verb}，理由：{request.reason}",
+        audit=AuditInfo(actor=counselor_token, rule_version="v1.0"),
+    )
+
+
+@app.post("/api/apply/{case_id}/supplement", response_model=SystemResponse)
+def submit_supplement(
+    case_id: str,
+    request: SupplementRequest,
+    db: Session = Depends(get_db),
+) -> SystemResponse:
+    record = db.get(CaseDB, case_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="案件不存在")
+
+    if record.status != CaseStatus.PENDING_DOCS.value:
+        raise HTTPException(
+            status_code=400, detail="当前状态不允许补充材料，仅 pending_docs 可补件"
+        )
+
+    record.reason_text = f"{record.reason_text}\n[补充] {request.additional_text}"
+    if request.attachment_url:
+        record.attachment_url = request.attachment_url
+    record.status = CaseStatus.IN_REVIEW.value
+    db.commit()
+    db.refresh(record)
+
+    return SystemResponse(
+        case_id=record.case_id,
+        status=CaseStatus(record.status),
+        message="补充材料已受理，重新进入人工复核队列",
+        audit=_build_audit(),
+    )

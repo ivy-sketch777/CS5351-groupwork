@@ -147,3 +147,91 @@ def test_apply_without_attachment_succeeds(client):
     resp = client.post("/api/apply", json=no_attach)
     assert resp.status_code == 200
     assert resp.json()["status"] == "pending_docs"
+
+
+def test_review_approve_long_case(client):
+    client.post("/api/apply", json=LONG_PAYLOAD)
+    resp = client.post(
+        f"/api/review/{LONG_PAYLOAD['case_id']}/decision",
+        json={"decision": "approve", "reason": "材料齐全，同意请假"},
+        headers=AUTH_HEADER,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "approved"
+    assert body["audit"]["actor"] == MOCK_COUNSELOR_TOKEN
+
+    status_resp = client.get(f"/api/status/{LONG_PAYLOAD['case_id']}")
+    assert status_resp.json()["status"] == "approved"
+
+
+def test_review_reject_long_case(client):
+    client.post("/api/apply", json=LONG_PAYLOAD)
+    resp = client.post(
+        f"/api/review/{LONG_PAYLOAD['case_id']}/decision",
+        json={"decision": "reject", "reason": "证明材料不足"},
+        headers=AUTH_HEADER,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "rejected"
+
+    status_resp = client.get(f"/api/status/{LONG_PAYLOAD['case_id']}")
+    assert status_resp.json()["status"] == "rejected"
+
+
+def test_review_on_non_in_review_returns_400(client):
+    client.post("/api/apply", json=SHORT_PAYLOAD)
+    resp = client.post(
+        f"/api/review/{SHORT_PAYLOAD['case_id']}/decision",
+        json={"decision": "approve", "reason": "随意批准"},
+        headers=AUTH_HEADER,
+    )
+    assert resp.status_code == 400
+
+
+def test_review_unknown_case_returns_404(client):
+    resp = client.post(
+        "/api/review/does-not-exist/decision",
+        json={"decision": "approve", "reason": "无"},
+        headers=AUTH_HEADER,
+    )
+    assert resp.status_code == 404
+
+
+def test_review_requires_auth(client):
+    client.post("/api/apply", json=LONG_PAYLOAD)
+    resp = client.post(
+        f"/api/review/{LONG_PAYLOAD['case_id']}/decision",
+        json={"decision": "approve", "reason": "无 token"},
+    )
+    assert resp.status_code == 401
+
+
+def test_supplement_pending_docs_reenters_queue(client):
+    client.post("/api/apply", json=SHORT_PAYLOAD)
+    resp = client.post(
+        f"/api/apply/{SHORT_PAYLOAD['case_id']}/supplement",
+        json={"additional_text": "已补交医疗证明", "attachment_url": "https://example.com/new.pdf"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "in_review"
+
+    pending = client.get("/api/review/pending", headers=AUTH_HEADER).json()
+    assert SHORT_PAYLOAD["case_id"] in {item["case_id"] for item in pending}
+
+
+def test_supplement_on_non_pending_docs_returns_400(client):
+    client.post("/api/apply", json=LONG_PAYLOAD)
+    resp = client.post(
+        f"/api/apply/{LONG_PAYLOAD['case_id']}/supplement",
+        json={"additional_text": "补件"},
+    )
+    assert resp.status_code == 400
+
+
+def test_supplement_unknown_case_returns_404(client):
+    resp = client.post(
+        "/api/apply/does-not-exist/supplement",
+        json={"additional_text": "补件"},
+    )
+    assert resp.status_code == 404
