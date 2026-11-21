@@ -1,15 +1,18 @@
 import os
 import sys
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
-SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src"))
-if SRC_DIR not in sys.path:
-    sys.path.insert(0, SRC_DIR)
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
-from core.api import app  # noqa: E402
-
-client = TestClient(app)
+from src.core.api import app  # noqa: E402
+from src.core.database import Base, get_db  # noqa: E402
 
 VALID_PAYLOAD = {
     "case_id": "11111111-1111-1111-1111-111111111111",
@@ -21,7 +24,36 @@ VALID_PAYLOAD = {
 }
 
 
-def test_apply_returns_draft_successfully():
+@pytest.fixture()
+def client():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    TestingSessionLocal = sessionmaker(
+        autocommit=False, autoflush=False, bind=engine
+    )
+    Base.metadata.create_all(bind=engine)
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+
+
+def test_apply_persists_and_returns_draft(client):
     resp = client.post("/api/apply", json=VALID_PAYLOAD)
     assert resp.status_code == 200
     body = resp.json()
@@ -32,14 +64,35 @@ def test_apply_returns_draft_successfully():
     assert body["audit"]["rule_version"] == "v1.0"
 
 
-def test_apply_missing_required_field_returns_422():
+def test_status_returns_persisted_case(client):
+    client.post("/api/apply", json=VALID_PAYLOAD)
+    resp = client.get(f"/api/status/{VALID_PAYLOAD['case_id']}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["case_id"] == VALID_PAYLOAD["case_id"]
+    assert body["status"] == "draft"
+    assert body["audit"]["actor"] == "system"
+
+
+def test_status_unknown_case_returns_404(client):
+    resp = client.get("/api/status/non-existent-case")
+    assert resp.status_code == 404
+
+
+def test_duplicate_case_id_returns_409(client):
+    client.post("/api/apply", json=VALID_PAYLOAD)
+    resp = client.post("/api/apply", json=VALID_PAYLOAD)
+    assert resp.status_code == 409
+
+
+def test_apply_missing_required_field_returns_422(client):
     bad = dict(VALID_PAYLOAD)
     del bad["student_id"]
     resp = client.post("/api/apply", json=bad)
     assert resp.status_code == 422
 
 
-def test_apply_without_attachment_succeeds():
+def test_apply_without_attachment_succeeds(client):
     no_attach = dict(VALID_PAYLOAD)
     no_attach.pop("attachment_url", None)
     resp = client.post("/api/apply", json=no_attach)
