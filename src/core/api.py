@@ -1,12 +1,16 @@
-from fastapi import Depends, FastAPI, HTTPException
+from typing import List
+
+from fastapi import Depends, FastAPI, Header, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.core.database import CaseDB, get_db, init_db
+from src.core.mock_policy import evaluate_policy
 from src.schemas import (
     ApplicationPayload,
     AuditInfo,
     CaseStatus,
+    PolicyResult,
     SystemResponse,
 )
 
@@ -14,15 +18,38 @@ app = FastAPI(title="MedLeaveAssist", version="1.0.0")
 
 init_db()
 
+MOCK_COUNSELOR_TOKEN = "MOCK-COUNSELOR"
+
+_STATUS_MESSAGE = {
+    CaseStatus.PENDING_DOCS: "申请已受理，正在等待材料提取",
+    CaseStatus.IN_REVIEW: "申请已受理，正在人工复核",
+    CaseStatus.FAILED: "申请处理失败，请检查后重新提交",
+}
+
+_RESULT_TO_STATUS = {
+    PolicyResult.PASS: CaseStatus.PENDING_DOCS,
+    PolicyResult.ROUTE_TO_REVIEW: CaseStatus.IN_REVIEW,
+    PolicyResult.FAIL_CLOSED: CaseStatus.FAILED,
+}
+
 
 def _build_audit() -> AuditInfo:
     return AuditInfo(actor="system", rule_version="v1.0")
+
+
+def require_counselor(x_counselor_token: str = Header(default="")) -> str:
+    if x_counselor_token != MOCK_COUNSELOR_TOKEN:
+        raise HTTPException(status_code=401, detail="辅导员认证失败")
+    return x_counselor_token
 
 
 @app.post("/api/apply", response_model=SystemResponse)
 def submit_application(
     payload: ApplicationPayload, db: Session = Depends(get_db)
 ) -> SystemResponse:
+    decision = evaluate_policy(payload)
+    target_status = _RESULT_TO_STATUS[decision.result]
+
     record = CaseDB(
         case_id=payload.case_id,
         student_id=payload.student_id,
@@ -31,7 +58,7 @@ def submit_application(
         end_date=payload.date_range.end_date,
         reason_text=payload.reason_text,
         attachment_url=payload.attachment_url,
-        status=CaseStatus.DRAFT.value,
+        status=target_status.value,
     )
     db.add(record)
     try:
@@ -44,7 +71,7 @@ def submit_application(
     return SystemResponse(
         case_id=record.case_id,
         status=CaseStatus(record.status),
-        message="申请已受理，正在等待材料提取",
+        message=_STATUS_MESSAGE[target_status],
         audit=_build_audit(),
     )
 
@@ -61,3 +88,26 @@ def get_status(case_id: str, db: Session = Depends(get_db)) -> SystemResponse:
         message=f"当前状态：{record.status}",
         audit=_build_audit(),
     )
+
+
+@app.get("/api/review/pending", response_model=List[SystemResponse])
+def list_pending_reviews(
+    db: Session = Depends(get_db),
+    _: str = Depends(require_counselor),
+) -> List[SystemResponse]:
+    records = (
+        db.query(CaseDB)
+        .filter(CaseDB.status == CaseStatus.IN_REVIEW.value)
+        .order_by(CaseDB.case_id)
+        .all()
+    )
+
+    return [
+        SystemResponse(
+            case_id=record.case_id,
+            status=CaseStatus(record.status),
+            message=f"待人工复核：{record.case_id}",
+            audit=_build_audit(),
+        )
+        for record in records
+    ]
