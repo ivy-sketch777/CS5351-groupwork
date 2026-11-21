@@ -2,4 +2,8 @@ fastapi
 uvicorn
 pydantic
 httpx
+<<<<<<< HEAD
+sqlalchemy
+=======
 pytest
+>>>>>>> d1d6de7f9bcf0b3234a69f8fa7f6a5df88d375dd
