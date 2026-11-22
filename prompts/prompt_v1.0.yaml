@@ -1,0 +1,10 @@
+# REQ-GOV-005 / REQ-INV-002: versioned prompt metadata.
+# AI is extraction-only; it never decides leave outcomes.
+prompt_id: medical_certificate_extraction
+version: "v1.0"
+model_version: "pending-ai-owner"
+authority: extraction_only
+owner: member-3-ai
+created_at: "2026-11-23"
+changelog:
+  - "v1.0: initial versioned extraction prompt (hospital, visit date, rest days, diagnosis)."

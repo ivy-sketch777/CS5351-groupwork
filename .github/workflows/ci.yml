@@ -1,27 +1,57 @@
+name: medleave-governance-gate
 
-name: Python CI
-
+# REQ-GOV-006: every push to main/feature branches and every PR to main
+# must pass this workflow before merging. Do not add continue-on-error,
+# "|| true", or conditional skips to the test steps below.
 on:
   push:
-    branches: [ "main", "feature/**" ]
+    branches: ["main", "feature/**", "feat/**"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
+  blocking-gate:
+    # This exact name is the required status check in branch protection.
+    name: blocking-gate
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.10"
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-    - name: Test with pytest
-      run: |
-        pip install pytest
-        pytest test/offline/ -v
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: "Gate A - governance static checks"
+        run: pytest test/offline/test_ci_governance.py -v --strict-markers
+
+      - name: "Gate B - full offline blocking suite"
+        run: pytest test/offline -q --strict-markers --junitxml=artifacts/junit.xml
+
+      - name: "Gate C - trace matrix coverage"
+        run: pytest test/offline/test_trace_matrix.py -v --strict-markers
+
+      - name: Upload gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blocking-gate-junit
+          path: artifacts/junit.xml
+          if-no-files-found: ignore
