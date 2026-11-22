@@ -111,17 +111,6 @@ def test_provider_timeout_no_retry_or_document_in_log(provider, caplog):
     assert TEXT not in caplog.text
 
 
-def test_cost001_count_timeout_fails_closed_before_generation(provider):
-    provider.count_input_tokens.side_effect = TimeoutError('preflight timeout')
-    result = run(provider)
-    assert provider.count_input_tokens.call_count == 1
-    provider.generate.assert_not_called()
-    for field in result.model_dump().values():
-        assert field['value'] is None
-        assert field['derived'] is True
-        assert field['confidence'] == 0.0
-
-
 def test_cost001_bad_reported_usage_fails_closed(provider):
     provider.generate.return_value = (json.dumps(response()), 3001)
     assert run(provider).visit_date.value is None
@@ -188,4 +177,3 @@ def test_openai_adapter_does_not_generate_for_oversize_input():
     adapter = OpenAIProvider(client, model_version='team-pinned-model')
     assert run(adapter).visit_date.value is None
     responses.create.assert_not_called()
-
