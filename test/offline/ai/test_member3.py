@@ -111,6 +111,17 @@ def test_provider_timeout_no_retry_or_document_in_log(provider, caplog):
     assert TEXT not in caplog.text
 
 
+def test_cost001_count_timeout_fails_closed_before_generation(provider):
+    provider.count_input_tokens.side_effect = TimeoutError('preflight timeout')
+    result = run(provider)
+    assert provider.count_input_tokens.call_count == 1
+    provider.generate.assert_not_called()
+    for field in result.model_dump().values():
+        assert field['value'] is None
+        assert field['derived'] is True
+        assert field['confidence'] == 0.0
+
+
 def test_cost001_bad_reported_usage_fails_closed(provider):
     provider.generate.return_value = (json.dumps(response()), 3001)
     assert run(provider).visit_date.value is None
@@ -177,3 +188,153 @@ def test_openai_adapter_does_not_generate_for_oversize_input():
     adapter = OpenAIProvider(client, model_version='team-pinned-model')
     assert run(adapter).visit_date.value is None
     responses.create.assert_not_called()
+
+
+# ==========================================================
+# CityU Chat Completions adapter (INCOMPLETE integration).
+# Production preflight fails closed; these offline tests use mocks only.
+# ==========================================================
+
+def _cityu_client(content=json.dumps(response()), *, finish_reason='stop',
+                  usage=(260, 85, 345), reasoning=None):
+    from unittest.mock import MagicMock
+
+    client = Mock()
+    completions = client.with_options.return_value.chat.completions
+    result = MagicMock()
+    result.choices[0].finish_reason = finish_reason
+    result.choices[0].message.content = content
+    result.choices[0].message.reasoning_content = reasoning
+    if usage is None:
+        result.usage = None
+    else:
+        result.usage.prompt_tokens, result.usage.completion_tokens, result.usage.total_tokens = usage
+    completions.create.return_value = result
+    return client, completions
+
+
+def test_cityu_preflight_fails_closed_and_blocks_generation():
+    from src.ai.cityu_provider import CityUProvider, TokenBudgetUnavailable
+
+    client, completions = _cityu_client()
+    adapter = CityUProvider(client, model_version='CS5351/DeepSeek-V4-Flash')
+    with pytest.raises(TokenBudgetUnavailable):
+        adapter.count_input_tokens(instructions='i', document=TEXT, schema={})
+    result = run(adapter)
+    for field in result.model_dump().values():
+        assert field['value'] is None and field['derived'] is True and field['confidence'] == 0.0
+    completions.create.assert_not_called()
+
+
+def test_cityu_generate_payload_shape_no_response_format():
+    from src.ai.cityu_provider import CityUProvider
+
+    client, completions = _cityu_client()
+    adapter = CityUProvider(client, model_version='CS5351/DeepSeek-V4-Flash')
+    adapter.generate(instructions='sys', document=TEXT, schema={}, max_output_tokens=300)
+    client.with_options.assert_called_once_with(max_retries=0, timeout=30.0)
+    kwargs = completions.create.call_args.kwargs
+    assert kwargs['temperature'] == 0 and kwargs['max_tokens'] == 300
+    assert kwargs['model'] == 'CS5351/DeepSeek-V4-Flash'
+    assert 'response_format' not in kwargs
+    assert kwargs['messages'][0]['role'] == 'system'
+    assert 'derived' in kwargs['messages'][0]['content']
+    assert kwargs['messages'][1] == {'role': 'user', 'content': TEXT}
+
+
+def test_cityu_content_only_and_usage_recorded():
+    from src.ai.cityu_provider import CityUProvider
+
+    client, _ = _cityu_client(reasoning='ignore me')
+    adapter = CityUProvider(client, model_version='m')
+    raw, total = adapter.generate(instructions='i', document=TEXT, schema={},
+                                  max_output_tokens=300)
+    assert raw == json.dumps(response()) and total == 345
+    assert adapter.last_usage == {'finish_reason': 'stop', 'reasoning_present': True,
+                                  'prompt_tokens': 260, 'completion_tokens': 85,
+                                  'total_tokens': 345}
+
+
+def test_cityu_empty_content_with_reasoning_is_empty():
+    from src.ai.cityu_provider import CityUProvider
+
+    client, _ = _cityu_client(content='', reasoning=json.dumps(response()))
+    adapter = CityUProvider(client, model_version='m')
+    raw, _ = adapter.generate(instructions='i', document=TEXT, schema={}, max_output_tokens=300)
+    assert raw == ''
+
+
+def test_cityu_truncated_length_rejected_even_if_parsable():
+    from src.ai.cityu_provider import CityUProvider
+
+    client, _ = _cityu_client(content=json.dumps(response()), finish_reason='length')
+    adapter = CityUProvider(client, model_version='m')
+    with pytest.raises(RuntimeError):
+        adapter.generate(instructions='i', document=TEXT, schema={}, max_output_tokens=300)
+    assert adapter.last_usage['rejected'] == 'truncated'
+    assert adapter.last_usage['total_tokens'] == 345
+
+
+def test_cityu_missing_usage_raises_and_resets_metadata():
+    from src.ai.cityu_provider import CityUProvider
+
+    client, _ = _cityu_client(usage=None)
+    adapter = CityUProvider(client, model_version='m')
+    with pytest.raises(RuntimeError):
+        adapter.generate(instructions='i', document=TEXT, schema={}, max_output_tokens=300)
+    assert adapter.last_usage == {'finish_reason': 'stop', 'reasoning_present': False,
+                                  'rejected': 'usage unknown'}
+
+
+def test_cityu_failed_call_does_not_reuse_previous_usage():
+    from src.ai.cityu_provider import CityUProvider
+
+    client, completions = _cityu_client()
+    adapter = CityUProvider(client, model_version='m')
+    adapter.generate(instructions='i', document=TEXT, schema={}, max_output_tokens=300)
+    assert adapter.last_usage['total_tokens'] == 345
+    # Second call fails at the API; prior usage must not survive.
+    completions.create.side_effect = TimeoutError('boom')
+    with pytest.raises(TimeoutError):
+        adapter.generate(instructions='i', document=TEXT, schema={}, max_output_tokens=300)
+    assert adapter.last_usage is None
+
+
+def test_cityu_validation_reused_and_ungrounded_fails_closed():
+    # A test-local provider returns a valid mock count so extract() proceeds to
+    # generate(); production count_input_tokens remains blocked (see above).
+    from src.ai.cityu_provider import CityUProvider
+
+    class _Precount(CityUProvider):
+        def count_input_tokens(self, *, instructions, document, schema):
+            return 850
+
+    client, _ = _cityu_client(content=json.dumps(response(hospital_name='Elsewhere Clinic')))
+    adapter = _Precount(client, model_version='m')
+    result = run(adapter)
+    assert result.hospital_name.value is None and result.hospital_name.derived is True
+    assert result.visit_date.value == '2026-10-21'
+
+
+def test_cityu_no_document_text_in_logs():
+    import logging
+    from unittest.mock import MagicMock
+
+    from src.ai.cityu_provider import CityUProvider
+
+    client, _ = _cityu_client()
+    adapter = CityUProvider(client, model_version='m')
+    records = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = _Capture()
+    logger = logging.getLogger('src.ai.cityu_provider')
+    logger.addHandler(handler)
+    try:
+        adapter.generate(instructions='i', document=TEXT, schema={}, max_output_tokens=300)
+    finally:
+        logger.removeHandler(handler)
+    assert all(TEXT not in msg for msg in records)
