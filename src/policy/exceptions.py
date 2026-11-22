@@ -1,0 +1,1 @@
+class PolicyConfigError(Exception): pass
