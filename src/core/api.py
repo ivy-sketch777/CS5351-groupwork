@@ -5,8 +5,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.core.database import CaseDB, get_db, init_db
-from src.core.mock_policy import evaluate_policy
 from src.core.models import ReviewDecisionRequest, SupplementRequest
+from src.policy import evaluate_policy
 from src.schemas import (
     ApplicationPayload,
     AuditInfo,
@@ -38,6 +38,28 @@ def _build_audit() -> AuditInfo:
     return AuditInfo(actor="system", rule_version="v1.0")
 
 
+def _has_approved_overlap(db: Session, payload: ApplicationPayload) -> bool:
+    new_start = payload.date_range.start_date
+    new_end = payload.date_range.end_date
+    existing = (
+        db.query(CaseDB)
+        .filter(
+            CaseDB.student_id == payload.student_id,
+            CaseDB.status == CaseStatus.APPROVED.value,
+            CaseDB.start_date <= new_end,
+            CaseDB.end_date >= new_start,
+        )
+        .first()
+    )
+    return existing is not None
+
+
+def _build_message(base_message: str, rule_ids: List[str]) -> str:
+    suffix = ", ".join(rule_ids) if rule_ids else "无"
+    return f"{base_message}（触发规则：{suffix}）"
+
+
+
 def require_counselor(x_counselor_token: str = Header(default="")) -> str:
     if x_counselor_token != MOCK_COUNSELOR_TOKEN:
         raise HTTPException(status_code=401, detail="辅导员认证失败")
@@ -48,7 +70,8 @@ def require_counselor(x_counselor_token: str = Header(default="")) -> str:
 def submit_application(
     payload: ApplicationPayload, db: Session = Depends(get_db)
 ) -> SystemResponse:
-    decision = evaluate_policy(payload)
+    overlap_flag = _has_approved_overlap(db, payload)
+    decision = evaluate_policy(payload, overlap_flag=overlap_flag)
     target_status = _RESULT_TO_STATUS[decision.result]
 
     record = CaseDB(
@@ -72,7 +95,9 @@ def submit_application(
     return SystemResponse(
         case_id=record.case_id,
         status=CaseStatus(record.status),
-        message=_STATUS_MESSAGE[target_status],
+        message=_build_message(
+            _STATUS_MESSAGE[target_status], decision.rule_ids_fired
+        ),
         audit=_build_audit(),
     )
 

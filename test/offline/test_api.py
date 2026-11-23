@@ -18,7 +18,7 @@ VALID_PAYLOAD = {
     "case_id": "11111111-1111-1111-1111-111111111111",
     "student_id": "2024001",
     "course_id": "COMP999",
-    "date_range": {"start_date": "2026-11-01", "end_date": "2026-11-03"},
+    "date_range": {"start_date": "2026-11-02", "end_date": "2026-11-02"},
     "reason_text": "感冒发烧，需要休息",
     "attachment_url": "https://example.com/medical.pdf",
 }
@@ -27,7 +27,7 @@ LONG_PAYLOAD = {
     "case_id": "22222222-2222-2222-2222-222222222222",
     "student_id": "2024002",
     "course_id": "COMP888",
-    "date_range": {"start_date": "2026-11-01", "end_date": "2026-11-05"},
+    "date_range": {"start_date": "2026-11-02", "end_date": "2026-11-05"},
     "reason_text": "手术后需要休息五天",
     "attachment_url": "https://example.com/medical2.pdf",
 }
@@ -36,7 +36,7 @@ SHORT_PAYLOAD = {
     "case_id": "33333333-3333-3333-3333-333333333333",
     "student_id": "2024003",
     "course_id": "COMP777",
-    "date_range": {"start_date": "2026-11-10", "end_date": "2026-11-11"},
+    "date_range": {"start_date": "2026-11-10", "end_date": "2026-11-10"},
     "reason_text": "轻微感冒",
     "attachment_url": None,
 }
@@ -79,7 +79,8 @@ def test_apply_persists_and_returns_pending_docs(client):
     body = resp.json()
     assert body["case_id"] == VALID_PAYLOAD["case_id"]
     assert body["status"] == "pending_docs"
-    assert body["message"] == "申请已受理，正在等待材料提取"
+    assert body["message"].startswith("申请已受理，正在等待材料提取")
+    assert "RULE-FR-003-SHORT-LEAVE" in body["message"]
     assert body["audit"]["actor"] == "system"
     assert body["audit"]["rule_version"] == "v1.0"
 
@@ -98,7 +99,8 @@ def test_long_leave_flows_to_in_review(client):
     resp = client.post("/api/apply", json=LONG_PAYLOAD)
     assert resp.status_code == 200
     assert resp.json()["status"] == "in_review"
-    assert resp.json()["message"] == "申请已受理，正在人工复核"
+    assert resp.json()["message"].startswith("申请已受理，正在人工复核")
+    assert "RULE-FR-007-LONG-LEAVE" in resp.json()["message"]
 
     status_resp = client.get(f"/api/status/{LONG_PAYLOAD['case_id']}")
     assert status_resp.status_code == 200
@@ -235,3 +237,68 @@ def test_supplement_unknown_case_returns_404(client):
         json={"additional_text": "补件"},
     )
     assert resp.status_code == 404
+
+
+def _apply_and_approve(client, payload):
+    apply_resp = client.post("/api/apply", json=payload)
+    assert apply_resp.status_code == 200
+    assert apply_resp.json()["status"] == "in_review"
+    approve_resp = client.post(
+        f"/api/review/{payload['case_id']}/decision",
+        json={"decision": "approve", "reason": "同意"},
+        headers=AUTH_HEADER,
+    )
+    assert approve_resp.status_code == 200
+    assert approve_resp.json()["status"] == "approved"
+
+
+def test_overlap_with_approved_leave_is_blocked(client):
+    _apply_and_approve(client, LONG_PAYLOAD)
+
+    overlapping = {
+        "case_id": "99999999-9999-9999-9999-999999999999",
+        "student_id": LONG_PAYLOAD["student_id"],
+        "course_id": "COMP111",
+        "date_range": {"start_date": "2026-11-03", "end_date": "2026-11-03"},
+        "reason_text": "再次请假",
+        "attachment_url": None,
+    }
+    resp = client.post("/api/apply", json=overlapping)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "failed"
+    assert "RULE-INV-003-OVERLAP" in body["message"]
+
+
+def test_non_overlapping_same_student_is_allowed(client):
+    _apply_and_approve(client, LONG_PAYLOAD)
+
+    non_overlapping = {
+        "case_id": "88888888-8888-8888-8888-888888888888",
+        "student_id": LONG_PAYLOAD["student_id"],
+        "course_id": "COMP111",
+        "date_range": {"start_date": "2026-12-01", "end_date": "2026-12-01"},
+        "reason_text": "日后请假",
+        "attachment_url": None,
+    }
+    resp = client.post("/api/apply", json=non_overlapping)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "pending_docs"
+    assert "RULE-INV-003-OVERLAP" not in resp.json()["message"]
+
+
+def test_only_approved_leaves_trigger_overlap(client):
+    client.post("/api/apply", json=LONG_PAYLOAD)
+
+    overlapping = {
+        "case_id": "77777777-7777-7777-7777-777777777777",
+        "student_id": LONG_PAYLOAD["student_id"],
+        "course_id": "COMP111",
+        "date_range": {"start_date": "2026-11-03", "end_date": "2026-11-03"},
+        "reason_text": "再次请假",
+        "attachment_url": None,
+    }
+    resp = client.post("/api/apply", json=overlapping)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "pending_docs"
+    assert "RULE-INV-003-OVERLAP" not in resp.json()["message"]
