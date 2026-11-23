@@ -1,0 +1,40 @@
+version: "v1.0"
+
+rules:
+  - id: RULE-INV-003-OVERLAP
+    priority: 1000
+    description: Block applications whose date range overlaps an already approved leave.
+    condition: is_overlapping == True
+    action: fail-closed
+    reason: The requested leave overlaps an already approved leave; submission is blocked.
+    set_overlap: true
+
+  - id: RULE-FR-007-LONG-LEAVE
+    priority: 900
+    description: Route leave longer than 3 days to manual review.
+    condition: duration_days > 3
+    action: route-to-review
+    reason: Leave longer than 3 days requires manual review.
+
+  - id: RULE-INV-001-INVALID-DATE
+    priority: 850
+    description: Reject applications whose start date is later than the end date.
+    condition: is_date_invalid == True
+    action: fail-closed
+    reason: The start date is later than the end date; the date range is invalid.
+
+  - id: RULE-FR-003-EVIDENCE-REQUIRED
+    priority: 800
+    description: Require a medical certificate for leave longer than 7 days.
+    condition: duration_days > 7 and has_evidence == False
+    action: fail-closed
+    reason: Leave longer than 7 days requires a medical certificate.
+    add_missing:
+      - medical_certificate
+
+  - id: RULE-FR-003-SHORT-LEAVE
+    priority: 100
+    description: Allow very short leave (less than 2 days) with explanation only.
+    condition: duration_days < 2
+    action: pass
+    reason: Short leave of less than 2 days only requires an explanation.
