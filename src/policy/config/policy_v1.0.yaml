@@ -34,7 +34,7 @@ rules:
 
   - id: RULE-FR-003-SHORT-LEAVE
     priority: 100
-    description: Allow very short leave (less than 2 days) with explanation only.
-    condition: duration_days < 2
+    description: Allow short leave (up to 2 teaching days) with explanation only.
+    condition: duration_days <= 2
     action: pass
-    reason: Short leave of less than 2 days only requires an explanation.
+    reason: Short leave of up to 2 teaching days only requires an explanation.

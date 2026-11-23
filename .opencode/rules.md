@@ -1,0 +1,1 @@
+你当前只能修改 src/policy/ 目录下的文件，绝对不允许修改 src/core/ 或 schemas.py。如果你必须用到其他模块的函数，请使用 Mock 或 import 契约
