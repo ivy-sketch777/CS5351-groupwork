@@ -74,6 +74,7 @@ def test_fr002_low_confidence_and_model_null(provider):
     json.dumps(response()).replace('0.95', 'NaN'),
     json.dumps(response()).replace('"value": "City Clinic"', '"value": "City Clinic", "value": "City Clinic"'),
 ])
+
 def test_fr002_inv002_invalid_response_fails_closed(provider, raw):
     provider.generate.return_value = (raw, 1030)
     result = run(provider)
@@ -253,7 +254,6 @@ def test_cityu_content_only_and_usage_recorded():
     assert adapter.last_usage == {'finish_reason': 'stop', 'reasoning_present': True,
                                   'prompt_tokens': 260, 'completion_tokens': 85,
                                   'total_tokens': 345}
-
 
 def test_cityu_empty_content_with_reasoning_is_empty():
     from src.ai.cityu_provider import CityUProvider

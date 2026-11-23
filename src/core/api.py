@@ -1,16 +1,20 @@
-from typing import List
+from typing import Any, List, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from src.ai import extract, student_guidance
+from src.ai.extractor import MIN_CONFIDENCE
 from src.core.database import CaseDB, get_db, init_db
-from src.core.mock_policy import evaluate_policy
 from src.core.models import ReviewDecisionRequest, SupplementRequest
+from src.policy import evaluate_policy
 from src.schemas import (
     ApplicationPayload,
     AuditInfo,
     CaseStatus,
+    ExtractionResult,
+    PolicyDecision,
     PolicyResult,
     SystemResponse,
 )
@@ -20,6 +24,13 @@ app = FastAPI(title="MedLeaveAssist", version="1.0.0")
 init_db()
 
 MOCK_COUNSELOR_TOKEN = "MOCK-COUNSELOR"
+
+_FIELD_LABELS = {
+    "hospital_name": "医院名称",
+    "visit_date": "就诊日期",
+    "rest_days": "建议休息天数",
+    "diagnosis": "诊断",
+}
 
 _STATUS_MESSAGE = {
     CaseStatus.PENDING_DOCS: "申请已受理，正在等待材料提取",
@@ -34,8 +45,84 @@ _RESULT_TO_STATUS = {
 }
 
 
+class _NoOpProvider:
+    """离线安全的默认提取 provider：不做任何网络调用。"""
+
+    model_version = "offline-noop"
+
+    def count_input_tokens(self, *, instructions: str, document: str,
+                           schema: dict[str, Any]) -> int:
+        return 0
+
+    def generate(self, *, instructions: str, document: str, schema: dict[str, Any],
+                 max_output_tokens: int) -> tuple[str, int]:
+        return "", 0
+
+
+def get_extraction_provider() -> Any:
+    """AI provider 依赖。默认返回离线 no-op；真实 provider 由集成环境覆盖。"""
+    return _NoOpProvider()
+
+
 def _build_audit() -> AuditInfo:
     return AuditInfo(actor="system", rule_version="v1.0")
+
+
+def _has_approved_overlap(db: Session, payload: ApplicationPayload) -> bool:
+    new_start = payload.date_range.start_date
+    new_end = payload.date_range.end_date
+    existing = (
+        db.query(CaseDB)
+        .filter(
+            CaseDB.student_id == payload.student_id,
+            CaseDB.status == CaseStatus.APPROVED.value,
+            CaseDB.start_date <= new_end,
+            CaseDB.end_date >= new_start,
+        )
+        .first()
+    )
+    return existing is not None
+
+
+def _build_message(base_message: str, rule_ids: List[str]) -> str:
+    suffix = ", ".join(rule_ids) if rule_ids else "无"
+    return f"{base_message}（触发规则：{suffix}）"
+
+
+def _missing_extraction_hints(extraction: ExtractionResult) -> List[str]:
+    """列出提取缺失/低置信度的字段，仅用于提示，绝不参与状态判定。"""
+    hints = []
+    for field_name, label in _FIELD_LABELS.items():
+        field = getattr(extraction, field_name)
+        if field is None or field.value is None or field.confidence < MIN_CONFIDENCE:
+            hints.append(label)
+    return hints
+
+
+def _run_extraction(payload: ApplicationPayload, provider: Any) -> ExtractionResult:
+    document = (payload.reason_text or "").strip()
+    if payload.attachment_url:
+        document = f"{document}\n{payload.attachment_url}".strip()
+    simple_request = payload.attachment_url is None and len(document) < 10
+    try:
+        return extract(document, provider=provider, ai_allowed=True,
+                       simple_request=simple_request)
+    except Exception:
+        return ExtractionResult()
+
+
+def _build_guidance_hint(decision: PolicyDecision,
+                         extraction: ExtractionResult) -> Optional[str]:
+    hints = _missing_extraction_hints(extraction)
+    if not hints and not decision.missing_items:
+        return None
+    parts = []
+    if hints:
+        parts.append("建议补充医疗信息：" + "、".join(hints))
+    guidance = student_guidance(decision)
+    if decision.missing_items:
+        parts.append(guidance)
+    return "；".join(parts)
 
 
 def require_counselor(x_counselor_token: str = Header(default="")) -> str:
@@ -46,9 +133,14 @@ def require_counselor(x_counselor_token: str = Header(default="")) -> str:
 
 @app.post("/api/apply", response_model=SystemResponse)
 def submit_application(
-    payload: ApplicationPayload, db: Session = Depends(get_db)
+    payload: ApplicationPayload,
+    db: Session = Depends(get_db),
+    provider: Any = Depends(get_extraction_provider),
 ) -> SystemResponse:
-    decision = evaluate_policy(payload)
+    extraction = _run_extraction(payload, provider)
+
+    overlap_flag = _has_approved_overlap(db, payload)
+    decision = evaluate_policy(payload, overlap_flag=overlap_flag)
     target_status = _RESULT_TO_STATUS[decision.result]
 
     record = CaseDB(
@@ -60,6 +152,7 @@ def submit_application(
         reason_text=payload.reason_text,
         attachment_url=payload.attachment_url,
         status=target_status.value,
+        extraction_json=extraction.model_dump_json(),
     )
     db.add(record)
     try:
@@ -69,10 +162,17 @@ def submit_application(
         raise HTTPException(status_code=409, detail="案件已存在，请勿重复提交")
     db.refresh(record)
 
+    message = _build_message(
+        _STATUS_MESSAGE[target_status], decision.rule_ids_fired
+    )
+    hint = _build_guidance_hint(decision, extraction)
+    if hint:
+        message = f"{message} {hint}"
+
     return SystemResponse(
         case_id=record.case_id,
         status=CaseStatus(record.status),
-        message=_STATUS_MESSAGE[target_status],
+        message=message,
         audit=_build_audit(),
     )
 

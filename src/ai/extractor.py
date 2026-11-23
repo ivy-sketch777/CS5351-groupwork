@@ -6,6 +6,7 @@ import math
 import re
 from datetime import date
 from pathlib import Path
+from functools import lru_cache
 from typing import Any, Protocol
 
 from src.schemas import ExtractedField, ExtractionResult
@@ -13,9 +14,19 @@ from src.schemas import ExtractedField, ExtractionResult
 log = logging.getLogger(__name__)
 
 # JSON syntax is a subset of YAML 1.2; no additional runtime parser needed.
-PROMPT = json.loads((Path(__file__).resolve().parents[2] / 'prompts' / 'prompt_v1.0.yaml')
-                    .read_text(encoding='utf-8'))
-PROMPT_VERSION: str = PROMPT['version']
+@lru_cache(maxsize=1)
+def _load_prompt() -> dict:
+    candidates = [
+        Path(__file__).resolve().parents[2] / 'prompts' / 'prompt_v1.0.yaml',
+        Path.cwd() / 'prompts' / 'prompt_v1.0.yaml',
+    ]
+    for path in candidates:
+        if path.is_file():
+            content = path.read_text(encoding='utf-8').strip()
+            if content:
+                return json.loads(content)
+    raise FileNotFoundError(f"Valid prompt_v1.0.yaml not found in: {candidates}")
+PROMPT_VERSION: str = _load_prompt()['version']
 FIELDS = tuple(ExtractionResult.model_fields)
 MIN_CONFIDENCE = 0.75
 MAX_TOTAL_TOKENS = 3000
@@ -116,7 +127,7 @@ def extract(document: str, *, provider: ExtractionProvider, ai_allowed: bool = F
         log.info('ai extraction skipped; tokens=0')
         return _empty()
 
-    request = {'instructions': PROMPT['instructions'], 'document': document,
+    request = {'instructions': _load_prompt()['instructions'], 'document': document,
                'schema': _wire_schema()}
     try:
         input_tokens = provider.count_input_tokens(**request)
