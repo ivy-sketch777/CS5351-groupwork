@@ -1,1 +1,10 @@
-你当前只能修改 src/policy/ 目录下的文件，绝对不允许修改 src/core/ 或 schemas.py。如果你必须用到其他模块的函数，请使用 Mock 或 import 契约
+# OpenCode Project Rules (MedLeaveAssist)
+
+1. **Data Contract & Red Lines**:
+   - Treat `src/schemas.py` and `AGENTS.md` as high-priority contracts. Do not alter schema contracts unless explicitly approved and aligned across modules.
+   - AI components only extract/summarize/assist; deterministic code owns policy decisions, state transitions, access control, and fail-closed behavior. Never fabricate `approved` status.
+
+2. **Module Boundaries & Human Supervision**:
+   - Respect module ownership (`src/core/`, `src/policy/`, `src/ai/`, `src/security/`, `src/governance/`, `test/`, `.github/workflows/`).
+   - When cross-module changes or safety-critical edits are needed, state the plan, affected files, and test impact clearly before editing.
+   - Do not modify unrelated files or delete existing tests/mocks that are still imported unless updating their callers in the same task.
