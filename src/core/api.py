@@ -8,6 +8,7 @@ from src.ai import extract, student_guidance
 from src.ai.extractor import MIN_CONFIDENCE
 from src.core.database import CaseDB, get_db, init_db
 from src.core.models import ReviewDecisionRequest, SupplementRequest
+from src.governance import build_audit, route_decision
 from src.policy import evaluate_policy
 from src.schemas import (
     ApplicationPayload,
@@ -18,6 +19,7 @@ from src.schemas import (
     PolicyResult,
     SystemResponse,
 )
+from src.security import redact_for_llm, sanitize_application, sanitize_text
 
 app = FastAPI(title="MedLeaveAssist", version="1.0.0")
 
@@ -64,8 +66,58 @@ def get_extraction_provider() -> Any:
     return _NoOpProvider()
 
 
-def _build_audit() -> AuditInfo:
-    return AuditInfo(actor="system", rule_version="v1.0")
+def _build_audit(
+    *,
+    actor: str = "system",
+    model_version: str | None = None,
+    prompt_version: str | None = None,
+) -> AuditInfo:
+    """REQ-GOV-001: audit via governance helper (never invent local fields)."""
+    return build_audit(
+        actor=actor,
+        rule_version="v1.0",
+        model_version=model_version,
+        prompt_version=prompt_version,
+    )
+
+
+def _is_simple_request(payload: ApplicationPayload) -> bool:
+    document = (payload.reason_text or "").strip()
+    return payload.attachment_url is None and len(document) < 10
+
+
+def _extraction_has_values(extraction: ExtractionResult) -> bool:
+    for name in ("hospital_name", "visit_date", "rest_days", "diagnosis"):
+        field = getattr(extraction, name, None)
+        if field is not None and field.value is not None:
+            return True
+    return False
+
+
+def _apply_review_route(
+    *,
+    target_status: CaseStatus,
+    extraction: ExtractionResult,
+    policy: PolicyDecision,
+) -> CaseStatus:
+    """Apply governance routing without inventing APPROVED (ADR-002).
+
+    Empty/skipped AI results (all-null fields) must not force in_review, or
+    short-leave pending_docs flows break. Escalate when governance cites
+    non-confidence reasons, or low confidence on fields that actually have values.
+    Never override FAIL_CLOSED → failed.
+    """
+    if target_status in (CaseStatus.FAILED, CaseStatus.IN_REVIEW):
+        return target_status
+
+    route = route_decision(extraction=extraction, policy=policy)
+    if not route.should_review:
+        return target_status
+
+    non_confidence = [r for r in route.reasons if not r.startswith("low_confidence")]
+    if non_confidence or _extraction_has_values(extraction):
+        return CaseStatus.IN_REVIEW
+    return target_status
 
 
 def _has_approved_overlap(db: Session, payload: ApplicationPayload) -> bool:
@@ -100,13 +152,17 @@ def _missing_extraction_hints(extraction: ExtractionResult) -> List[str]:
 
 
 def _run_extraction(payload: ApplicationPayload, provider: Any) -> ExtractionResult:
-    document = (payload.reason_text or "").strip()
-    if payload.attachment_url:
-        document = f"{document}\n{payload.attachment_url}".strip()
-    simple_request = payload.attachment_url is None and len(document) < 10
+    """REQ-SEC-001/002 + REQ-ARCH-004: only sanitized+redacted text reaches the model."""
+    attachment_text = (payload.attachment_url or "").strip()
+    document = redact_for_llm(payload, extracted_text=attachment_text)
+    simple_request = _is_simple_request(payload)
     try:
-        return extract(document, provider=provider, ai_allowed=True,
-                       simple_request=simple_request)
+        return extract(
+            document,
+            provider=provider,
+            ai_allowed=True,
+            simple_request=simple_request,
+        )
     except Exception:
         return ExtractionResult()
 
@@ -137,11 +193,18 @@ def submit_application(
     db: Session = Depends(get_db),
     provider: Any = Depends(get_extraction_provider),
 ) -> SystemResponse:
+    # Security gate before AI / policy (REQ-SEC-001, REQ-ARCH-004)
+    payload = sanitize_application(payload)
     extraction = _run_extraction(payload, provider)
 
     overlap_flag = _has_approved_overlap(db, payload)
     decision = evaluate_policy(payload, overlap_flag=overlap_flag)
     target_status = _RESULT_TO_STATUS[decision.result]
+    target_status = _apply_review_route(
+        target_status=target_status,
+        extraction=extraction,
+        policy=decision,
+    )
 
     record = CaseDB(
         case_id=payload.case_id,
@@ -169,11 +232,12 @@ def submit_application(
     if hint:
         message = f"{message} {hint}"
 
+    model_version = getattr(provider, "model_version", None)
     return SystemResponse(
         case_id=record.case_id,
         status=CaseStatus(record.status),
         message=message,
-        audit=_build_audit(),
+        audit=_build_audit(model_version=model_version),
     )
 
 
@@ -245,7 +309,7 @@ def submit_review_decision(
         case_id=record.case_id,
         status=CaseStatus(record.status),
         message=f"复核{verb}，理由：{request.reason}",
-        audit=AuditInfo(actor=counselor_token, rule_version="v1.0"),
+        audit=_build_audit(actor=counselor_token),
     )
 
 
@@ -264,7 +328,8 @@ def submit_supplement(
             status_code=400, detail="当前状态不允许补充材料，仅 pending_docs 可补件"
         )
 
-    record.reason_text = f"{record.reason_text}\n[补充] {request.additional_text}"
+    clean_extra = sanitize_text(request.additional_text)
+    record.reason_text = f"{record.reason_text}\n[补充] {clean_extra}"
     if request.attachment_url:
         record.attachment_url = request.attachment_url
     record.status = CaseStatus.IN_REVIEW.value
