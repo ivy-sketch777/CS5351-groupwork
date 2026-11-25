@@ -1,0 +1,48 @@
+# requirements.yaml - Machine-checkable requirements
+#
+# D1 (Requirements) contribution by Member 2 (Rule Engine Owner).
+# This file currently covers REQ-FR-003 and REQ-INV-001.
+# Other members should append their requirements under `requirements:`.
+#
+# Each fit_criterion entry MUST be verifiable mechanically (by a test or a
+# grep/review check), not a vague adjective.
+
+requirements:
+  - id: REQ-FR-003
+    title: Dynamic policy engine returns a structured decision
+    owner: Member 2 (Rule Engine)
+    description: >
+      The policy engine evaluates configurable rules (YAML) and returns a
+      structured PolicyDecision whose result is one of
+      {pass, fail-closed, route-to-review}, together with the list of fired
+      rule IDs. Rules MUST NOT be hardcoded in source code.
+    fit_criterion:
+      - "Every evaluation returns a PolicyDecision whose .result is one of the PolicyResult enum values."
+      - "Every evaluation returns rule_ids_fired; for every rule that matches, its ID appears in rule_ids_fired."
+      - "All rule conditions/actions/reasons live in src/policy/config/*.yaml; a grep of src/policy/*.py finds zero hardcoded rule thresholds or rule IDs (e.g. 'RULE-...', '3 days', '7 days')."
+      - "Changing a rule requires editing YAML only, not Python."
+      - "The three documented scenarios are covered by rules: <=2 days explanation-only (pass), >7 days requires evidence (fail-closed), date conflict (fail-closed)."
+    verified_by:
+      - src/policy/config/rules.yaml
+      - src/policy/rule_loader.py
+      - src/policy/engine.py
+      - test/offline/policy/test_rule_loader.py
+      - test/offline/policy/test_engine.py
+
+  - id: REQ-INV-001
+    title: Never auto-approve without a deterministic policy check
+    owner: Member 2 (Rule Engine)
+    description: >
+      No application may reach an approved state without the deterministic
+      policy engine confirming all mandatory rules pass. Cases with missing
+      or invalid date, or missing evidence, MUST NOT result in automatic
+      approval.
+    fit_criterion:
+      - "Cases with an invalid date (start_date > end_date) return fail-closed, never pass."
+      - "Cases longer than 7 teaching days without evidence return fail-closed with missing_items=['medical_certificate']."
+      - "If no rule matches, the engine defaults to fail-closed (result == FAIL_CLOSED), guaranteeing zero auto-approvals for unclassified cases."
+      - "Any internal error (YAML load failure, condition evaluation error, unexpected exception) is converted to fail-closed; evaluate_policy never raises."
+      - "The engine never returns a fake success (pass) as a fallback."
+    verified_by:
+      - src/policy/engine.py
+      - test/offline/policy/test_engine.py
