@@ -1,0 +1,111 @@
+{
+  // Ownership map for the final delivery phase.
+  // Principle: one owner per path, least privilege, no cross-member edits.
+  "version": "1.0",
+  "date": "2026-11-25",
+  "owner": "member-5-qa-ci",
+  "principle": "Path-scoped least privilege; cross-module integration and traceability backfill are consolidated by Member 1.",
+  "redLines": [
+    "src/schemas.py",
+    "src/core/**",
+    ".github/workflows/ci.yml",
+    "docs/trace-matrix.md",
+    "trace-matrix.md",
+    "Report.md"
+  ],
+  "roles": [
+    {
+      "id": "member-1-core-integration",
+      "owns": [
+        "src/core/**",
+        "src/main.py",
+        ".github/workflows/ci.yml",
+        "docs/trace-matrix.md",
+        "trace-matrix.md",
+        "Report.md"
+      ],
+      "permissions": ["read", "write", "merge", "consolidate"],
+      "notes": "Sole owner of authoritative write path, CI workflow, and final report."
+    },
+    {
+      "id": "member-2-policy",
+      "owns": [
+        "src/policy/**",
+        "docs/req/requirements.yaml",
+        "docs/architecture/runtime-policy-catalog.md",
+        "test/offline/policy/**",
+        "docs/drafts/report-m2.md",
+        "transcripts/<student-id>-<name>.md",
+        ".opencode/rules.md"
+      ],
+      "permissions": ["read", "write"]
+    },
+    {
+      "id": "member-3-ai",
+      "owns": [
+        "src/ai/**",
+        "prompts/**",
+        "docs/architecture/memory-design.md",
+        "docs/drafts/report-m3.md",
+        "transcripts/<student-id>-<name>.md"
+      ],
+      "permissions": ["read", "write"],
+      "notes": "Must append changelog entries in prompts/prompt_v1.0.yaml on prompt changes."
+    },
+    {
+      "id": "member-4-security-governance",
+      "owns": [
+        "src/security/**",
+        "src/governance/**",
+        "docs/architecture/permission-model.md",
+        "docs/architecture/adr/**",
+        "test/offline/security/**",
+        "test/offline/governance/**",
+        "docs/drafts/report-m4.md",
+        "transcripts/<student-id>-<name>.md"
+      ],
+      "permissions": ["read", "write"]
+    },
+    {
+      "id": "member-5-qa-ci",
+      "owns": [
+        "test/offline/*.py",
+        "test/offline/conftest.py",
+        "test/offline/gov_helpers.py",
+        "docs/code-governance/**",
+        "docs/ci-gate.md",
+        "docs/review-memo.md",
+        "docs/debt-register.md",
+        "docs/bug-diary.md",
+        ".opencode/permissions.jsonc",
+        ".agent/rules.md",
+        "transcripts/55641875-Tang Man Kit.md"
+      ],
+      "permissions": ["read", "write", "review"],
+      "deny": [
+        "src/schemas.py",
+        "src/core/**",
+        ".github/workflows/ci.yml",
+        "docs/trace-matrix.md",
+        "trace-matrix.md",
+        "Report.md"
+      ],
+      "notes": "Maintains the gate tests and governance records; does not merge M1-owned paths."
+    }
+  ],
+  "ci": {
+    "requiredCheck": "blocking-gate",
+    "failClosed": true,
+    "requiredGates": [
+      "test/offline/test_ci_governance.py",
+      "test/offline (full suite)",
+      "test/offline/test_trace_matrix.py"
+    ],
+    "forbiddenBypassTokens": [
+      "continue-on-error: true",
+      "|| true",
+      "if: always() on pytest steps"
+    ],
+    "localPrecondition": "pytest test/offline -q"
+  }
+}
