@@ -21,9 +21,9 @@ requirements:
       - "Every evaluation returns rule_ids_fired; for every rule that matches, its ID appears in rule_ids_fired."
       - "All rule conditions/actions/reasons live in src/policy/config/*.yaml; a grep of src/policy/*.py finds zero hardcoded rule thresholds or rule IDs (e.g. 'RULE-...', '3 days', '7 days')."
       - "Changing a rule requires editing YAML only, not Python."
-      - "The three documented scenarios are covered by rules: <2 days explanation-only (pass), >7 days requires evidence (fail-closed), date conflict (fail-closed)."
+      - "The three documented scenarios are covered by rules: <=2 days explanation-only (pass), >7 days requires evidence (fail-closed), date conflict (fail-closed)."
     verified_by:
-      - src/policy/config/policy_v1.0.yaml
+      - src/policy/config/rules.yaml
       - src/policy/rule_loader.py
       - src/policy/engine.py
       - test/offline/policy/test_rule_loader.py
