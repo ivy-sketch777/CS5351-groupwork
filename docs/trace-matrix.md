@@ -9,8 +9,8 @@
 | 需求 ID | 类型 | 代码位置 | 测试用例 | 状态 |
 | --- | --- | --- | --- | --- |
 | REQ-FR-001 | FR | `src/schemas.py` (`ApplicationPayload`), `src/core/api.py` (`/api/apply`) | `test/offline/test_api.py::test_apply_persists_and_returns_pending_docs`, `test/offline/test_schema_contract.py::test_application_payload_contract_fields_exact` | 已覆盖 |
-| REQ-FR-002 | FR | `src/schemas.py` (`ExtractionResult`), `src/ai/extractor.py`,`src/core/api.py` (`_run_extraction`) | `test/offline/test_schema_contract py::test_extraction_result_contract_fields_exact`, `test/offline/governance/test_review_router.py::test_review_packet_shows_derived_exact_values`|已覆盖（离线链路；真实 LLM/网关联调待验证）
-| REQ-FR-003 | FR | `src/policy/engine.py`, `src/policy/config/policy_v1.0.yaml`，`src/core/api.py（src/core/mock_policy.py 仅作部分集成测试兼容）`| `test/offline/test_api.py::test_long_leave_flows_to_in_review`, `test/offline/test_schema_contract.py::test_policy_decision_contract_fields_exact` | 已覆盖 |
+| REQ-FR-002 | FR | `src/schemas.py` (`ExtractionResult`), `src/ai/extractor.py`,`src/core/api.py` (`_run_extraction`) | `test/offline/test_schema_contract.py::test_extraction_result_contract_fields_exact`, `test/offline/governance/test_review_router.py::test_review_packet_shows_derived_exact_values`|已覆盖（离线链路；真实 LLM/网关联调待验证）
+| REQ-FR-003 | FR | `src/policy/engine.py`, `src/policy/config/policy_v1.0.yaml`，`src/policy/config/rules.yaml`，`src/core/api.py（src/core/mock_policy.py 仅作部分集成测试兼容）`| `test/offline/test_api.py::test_long_leave_flows_to_in_review`, `test/offline/test_schema_contract.py::test_policy_decision_contract_fields_exact` | 已覆盖 |
 | REQ-FR-004 | FR | `src/core/api.py`, `src/core/models.py`, `src/schemas.py` (`CaseStatus`) | `test/offline/test_integration_flow.py::test_full_review_chain_never_fakes_success`, `test/offline/test_api.py::test_status_unknown_case_returns_404` | 已覆盖 |
 | REQ-FR-005 | FR | `src/governance/review_router.py`, `src/ai/summarizer.py (student_guidance)`，`src/core/api.py (submit_supplement)` | `test/offline/test_integration_flow.py::test_supplement_reenters_review_queue`, `test/offline/governance/test_review_router.py::test_missing_docs_routes_to_review` | 已覆盖 |
 | REQ-FR-006 | FR | `src/ai/summarizer.py`, `src/governance/review_packet.py`，`src/core/api.py (_build_guidance_hint)` | `test/offline/governance/test_review_router.py::test_review_packet_shows_derived_exact_values` | 部分覆盖（离线摘要/审核包已覆盖，线上全量联调待确认） |
@@ -43,8 +43,8 @@
 
 ## 状态说明
 
-- **已覆盖**：确定性门禁已有测试与代码引用。
-- **部分覆盖 / 待交付**：成员 1–4 的模块尚未合入；矩阵保留引用与门禁，模块交付后需由对应成员更新为「已覆盖」，并在 PR 中同步本文件。
+- 已覆盖：确定性门禁已有测试与代码引用。
+- 部分覆盖 / 待交付：核心与安全/治理模块已合入并通过确定性门禁；涉及真实外部 SSO 集成、生产级 Token 预检及性能压测基准的条目按实际工程边界如实标注为「待交付」或「部分覆盖」。
 
 ## 覆盖口径
 
